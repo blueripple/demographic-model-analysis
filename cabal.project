@@ -1,17 +1,15 @@
-packages: ./ ../../libs/model-demographic ~/DataScience/data-science-utils ~/DataScience/nlopt-haskell
+packages: ./
 jobs: 4
 with-compiler: ghc
 profiling: False
 
-allow-newer: polysemy-zoo:ghc-prim, streamly-core
+allow-newer: base, ghc-prim, bytestring, time, primitive, containers, constraints
            , freer-simple:template-haskell
+           , polysemy-zoo:text
            , foldl-statistics:hashable, foldl-statistics:profunctors
            , cereal-time:time
-           , heidi:base
-           , generic-trie:base
-           , streamly-bytestring:streamly-core
-           , nonlinear-optimization:primitive, nonlinear-optimization:vector
-           , discrimination:primitive
+           , pipes-text:text
+           , nonlinear-optimization:vector
 
 flags: +streamly9
 
@@ -22,18 +20,20 @@ import: ../../libs/cabal_repo_imports/data-tools.project
 import: ../../libs/cabal_repo_imports/data-loading.project
 import: ../../libs/cabal_repo_imports/data-ACS-Tables.project
 import: ../../libs/cabal_repo_imports/data-ACS-PUMS.project
+import: ../../libs/cabal_repo_imports/model-demographic.project
 import: ../../libs/cabal_repo_imports/model-tools.project
---import: ../../libs/cabal_repo_imports/model-demographic.project
 import: ../../libs/cabal_repo_imports/haskell-stan.project
 import: ../../libs/cabal_repo_imports/knit-haskell.project
 import: ../../libs/cabal_repo_imports/Frames-streamly.project
 import: ../../libs/cabal_repo_imports/Frames-serialize.project
 import: ../../libs/cabal_repo_imports/Frames-utils.project
 import: ../../libs/cabal_repo_imports/Frames-hvega.project
---import: ../../libs/cabal_repo_imports/data-science-utils.project
 import: ../../libs/cabal_repo_imports/hvega-utils.project
 import: ../../libs/cabal_repo_imports/map-reduce-folds.project
 import: ../../libs/cabal_repo_imports/Frames-map-reduce.project
+import: ../../libs/cabal_repo_imports/data-science-utils.project
 import: ../../libs/cabal_repo_imports/heidi.project
 import: ../../libs/cabal_repo_imports/polysemy-randomFu.project
 import: ../../libs/cabal_repo_imports/hTensor.project
+import: ../../libs/cabal_repo_imports/nlopt-haskell.project
+import: ../../libs/cabal_repo_imports/dependent-hashmap.project

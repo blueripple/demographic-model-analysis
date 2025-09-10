@@ -942,7 +942,7 @@ asrASE_average_stuff = do
         case e of
           Left msg -> K.knitError msg
           Right x -> pure x
-      asOptimize nV mLSI_E (pV, aV) = DED.mapPE $ DTP.optimalWeightsAS Nothing mLSI_E nV aV pV
+      asOptimize nV mLSI_E (pV, aV) = DED.mapPE $ DTP.optimalWeightsAS DTP.semThrow Nothing mLSI_E nV aV pV
 --  aaASTensor <- LA.fromColumns <$> (traverse (asOptimize nullVecsTensor) $ owOptimizerData meanAlphaTensor)
   aaASSVD <- logTime "NNLS" (LA.fromColumns <$> (traverse (asOptimize nullVecsSVD Nothing) $ owOptimizerDataSVD))
   K.logLE K.Info $ "avg SVD AAAS deviation=" <> show (FL.fold FL.mean $ totalDeviations $ toJoint nullVecsSVD aaASSVD)
@@ -1138,10 +1138,10 @@ nearestOnSimplex nvps pM aM = pure $ DTP.fullToProj nvps $ DTP.projectToSimplex 
 euclideanSLSQP :: K.KnitEffects r => DTP.NullVectorProjections k -> OnSimplex (K.Sem r)
 euclideanSLSQP nvps pM aM = DED.mapPE $ DTP.optimalWeights DTP.defaultOptimalWeightsAlgoConfig (DTP.OWKLogLevel $ K.Debug 3) DTP.euclideanFull nvps aM pM
 
-nnls :: K.KnitEffects r => DTP.NullVectorProjections k -> OnSimplex (K.Sem r)
-nnls nvps pV aV =
+nnls :: MonadIO m => (forall a. Text -> m a) -> DTP.NullVectorProjections k -> OnSimplex m
+nnls throw nvps pV aV =
   let mLSIE = Just $ LH.precomputeFromE $ DTP.projToFullM nvps
-  in DED.mapPE $ DTP.optimalWeightsAS Nothing mLSIE nvps aV pV
+  in DTP.optimalWeightsAS throw Nothing mLSIE nvps aV pV
 
 weightedSLSQP :: K.KnitEffects r => DTP.NullVectorProjections k -> (Double -> Double) -> OnSimplex (K.Sem r)
 weightedSLSQP nvps f pM aM = DED.mapPE $ DTP.optimalWeights DTP.defaultOptimalWeightsAlgoConfig (DTP.OWKLogLevel $ K.Debug 3) (DTP.euclideanWeighted f) nvps aM pM
@@ -1171,7 +1171,7 @@ modelSimplexEstimatesP :: Streamly.MonadAsync m
 modelSimplexEstimatesP cf nvps am os covM pM =
   fmap LA.fromColumns
   $ Streamly.toList
-  $ Streamly.mapM (modelSimplexEstimate nvps am os) --Streamly.parMapM cf (modelSimplexEstimate nvps am os)
+  $ Streamly.parMapM cf (modelSimplexEstimate nvps am os)
   $ Streamly.fromList
   $ zip (LA.toColumns covM) (LA.toColumns pM)
 
@@ -1256,10 +1256,8 @@ csrASR_ASER_Tracts n = K.wrapPrefix "csrASR_Tracts" $ do
   let predictNNLS t nullVecs (pumaAlphas, tractProducts) =
         let lsiE = LH.precomputeFromE (DTP.projToFullM nullVecs)
         in logTime ("Predict " <> t <> " " <> show n <> " NNLS")
-           $ estimate nullVecs (averageAlphaModel pumaAlphas) (nnls nullVecs) tractProducts tractProducts
-  let nnlsCASR_C = K.wctBind (predictNNLS "CASR" nullVecsCASR) $ (,) <$> pumaCASRAlphas_C <*> tractProd_CASR_C
---  nnlsCASRCount <- LA.cols <$> K.ignoreCacheTime nnlsCASR_C
---  K.logLE K.Info $ "Final nnls matrix has " <> show nnlsCASRCount <> " cols"
+           $ estimate nullVecs (averageAlphaModel pumaAlphas) (nnls DTP.semThrow nullVecs) tractProducts tractProducts
+  let nnlsCASR_C = K.wctBind (DED.mapPE . predictNNLS "CASR" nullVecsCASR) $ (,) <$> pumaCASRAlphas_C <*> tractProd_CASR_C
 
 
   let casrKeys :: F.Record DMC.CASR -> (F.Record [DT.SexC, DT.Race5C], F.Record '[DT.CitizenC, DT.Age5C])
@@ -1282,23 +1280,24 @@ csrASR_ASER_Tracts n = K.wrapPrefix "csrASR_Tracts" $ do
   let casrSER_prodDeps = (,) <$> tractsCASR_C <*> fmap testM tractsSER_C -- because the CASR set is already reduced
       tractProd_CASER_C =  K.wctBind (\(casr, ser) ->  logTime "make tract CASER products" $ pure $ products casrKeys serKeys toCASER casr ser) casrSER_prodDeps
       tractsCASER_C = K.wctBind (predictAvgSLSQP "CASER" nullVecsCASER) $ (,) <$> pumaCASERAlphas_C <*> tractProd_CASER_C
-  slsqpCASERCount <- LA.cols <$> K.ignoreCacheTime tractsCASER_C
-  K.logLE K.Info $ "Final matrix has " <> show slsqpCASERCount <> " cols"
+--  slsqpCASERCount <- LA.cols <$> K.ignoreCacheTime tractsCASER_C
+--  K.logLE K.Info $ "Final matrix has " <> show slsqpCASERCount <> " cols"
+
+  let parallelPipeline t nv pumaAlphaM productM =
+        logTime ("Predict " <> show n <> " " <> show t <> " via avg/NNLS (Parallel via Streamly)")
+        $ KS.streamlyToKnit
+        $ modelSimplexEstimatesP
+        (Streamly.ordered True)
+        nv (averageAlphaModel pumaAlphaM) (nnls KS.errStreamly nv) productM productM
 
 
-{-
-  let owConfigStreamly = DTP.OptimalWeightsConfig DTP.defaultOptimalWeightsAlgoConfig (\_ ->  pure ()) KS.errStreamly
-      streamlyOWOS nvps pM aM = DTP.optimalWeights' owConfigStreamly DTP.euclideanFull nvps aM pM
-  avgPredictSLSQP_P <- logTime ("Predict " <> show n <> " avg/SLSQP (Parallel via Streamly)")
-                       $ K.ignoreCacheTime
-                       $ K.wctBind (\(pumaAlphaM, pM) ->
-                                      KS.streamlyToKnit
-                                      $ modelSimplexEstimatesP (Streamly.maxThreads 1 . Streamly.ordered True) nullVecsSVD (averageAlphaModel pumaAlphaM) (streamlyOWOS nullVecsSVD) pM pM)
-                       $ (,) <$> pumaAlphas_C <*> tractProd_CASR_C
--}
-  let nnlsCASER_C = K.wctBind (predictNNLS "CASER" nullVecsCASER) $ (,) <$> pumaCASERAlphas_C <*> tractProd_CASER_C
+  let nnlsCASER_C = K.wctBind (DED.mapPE . predictNNLS "CASER" nullVecsCASER) $ (,) <$> pumaCASERAlphas_C <*> tractProd_CASER_C
   nnlsCASERCount <- LA.cols <$> K.ignoreCacheTime nnlsCASER_C
   K.logLE K.Info $ "Final nnls matrix has " <> show nnlsCASERCount <> " cols"
+
+  let nnlsCASER_P_C = K.wctBind (uncurry $ parallelPipeline "CASER" nullVecsCASER) $ (,) <$> pumaCASERAlphas_C <*> tractProd_CASER_C
+  nnlsCASERCountP <- LA.cols <$> K.ignoreCacheTime nnlsCASER_P_C
+  K.logLE K.Info $ "Final parallel nnls matrix has " <> show nnlsCASERCountP <> " cols"
 
   pure ()
 
@@ -1359,7 +1358,7 @@ reportVariations nullVecs (testM, testProductsM) (trainingM, trainingProductsM) 
   reportErrors "OS(<alpha>)" testM aaOS
   aaSLSQP <- logTime "SLSQP(<alpha>)" $ estimate nullVecs aaModel (euclideanSLSQP nullVecs) testProductsM testProductsM
   reportErrors "SLSQP(<alpha>)" testM aaSLSQP
-  aaNNLS <- logTime "NNLS(<alpha>)" $ estimate nullVecs aaModel (nnls nullVecs) testProductsM testProductsM
+  aaNNLS <- logTime "NNLS(<alpha>)" $ estimate nullVecs aaModel (\x y -> DED.mapPE $ nnls DTP.semThrow nullVecs x y) testProductsM testProductsM
   reportErrors "NNLS(<alpha>)" testM aaNNLS
   let alphaLRModel = alphaProductLR trainingProductsM trainingAlpha
   lraSLSQP <- logTime "SLSQP(alpha_LR)" $ estimate nullVecs alphaLRModel (euclideanSLSQP nullVecs) testProductsM testProductsM
@@ -1526,7 +1525,7 @@ asAE_average_stuff = do
         case e of
           Left msg -> K.knitError msg
           Right x -> pure x
-      asOptimize nV  mLSI_E (pV, aV) = DED.mapPE $ DTP.optimalWeightsAS (Just (\x -> 1 / sqrt x)) mLSI_E nV aV pV
+      asOptimize nV  mLSI_E (pV, aV) = DED.mapPE $ DTP.optimalWeightsAS DTP.semThrow (Just (\x -> 1 / sqrt x)) mLSI_E nV aV pV
 --  aaASTensor <- LA.fromColumns <$> (traverse (asOptimize nullVecsTensor) $ owOptimizerData meanAlphaTensor)
   aaASSVD <- logTime "NNLS (SVD), naive" (LA.fromColumns <$> (traverse (asOptimize nullVecsSVD Nothing) $ owOptimizerData meanAlphaSVD))
   K.logLE K.Info $ "avg SVD AAAS deviation=" <> show (FL.fold FL.mean $ totalDeviations $ toJoint nullVecsSVD aaASSVD)
@@ -2133,9 +2132,9 @@ main = do
     DMC.checkCensusTables filteredCensusTables_C
 -}
 --    compareCSR_ASR cmdLine postInfo
---    csrASR_ASER_Tracts 100
+    csrASR_ASER_Tracts 1000
 --    asAE_Tracts
-    asAE_PUMAs
+--    asAE_PUMAs
 --    asAE_TractsFromPUMAs
 --    asAE_average_stuff
 --    DED.mapPE $ compareAS_AE cmdLine postInfo
